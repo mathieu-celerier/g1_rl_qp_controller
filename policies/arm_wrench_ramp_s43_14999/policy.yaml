@@ -1,0 +1,81 @@
+# ArmWrenchRamp model_14999, training seed 43 (sensitive to base-velocity error).
+# Trained in mjlab (repository mjlab_acceleration_policies), exported with evaluations/tools/export_onnx.py.
+name: arm_wrench_ramp_s43_14999
+onnx: policy.onnx
+
+action:
+  # The action is a joint acceleration (mjlab JointAccelerationActionCfg): qdd* = scale * action,
+  # tracked by the PostureTask in the CBF-QP.
+  type: acceleration
+  joints: all
+  acceleration_limit: 900.0
+  # Exact per-joint scales of the training run (params/env.yaml), rad/s^2.
+  scale:
+    left_hip_pitch_joint: 30.0
+    left_hip_roll_joint: 25.0
+    left_hip_yaw_joint: 15.0
+    left_knee_joint: 45.0
+    left_ankle_pitch_joint: 20.0
+    left_ankle_roll_joint: 12.0
+    right_hip_pitch_joint: 30.0
+    right_hip_roll_joint: 25.0
+    right_hip_yaw_joint: 15.0
+    right_knee_joint: 45.0
+    right_ankle_pitch_joint: 20.0
+    right_ankle_roll_joint: 12.0
+    waist_yaw_joint: 15.0
+    waist_roll_joint: 10.0
+    waist_pitch_joint: 10.0
+    left_shoulder_pitch_joint: 8.0
+    left_shoulder_roll_joint: 6.0
+    left_shoulder_yaw_joint: 4.0
+    left_elbow_joint: 6.0
+    left_wrist_roll_joint: 2.0
+    left_wrist_pitch_joint: 1.0
+    left_wrist_yaw_joint: 1.0
+    right_shoulder_pitch_joint: 8.0
+    right_shoulder_roll_joint: 6.0
+    right_shoulder_yaw_joint: 4.0
+    right_elbow_joint: 6.0
+    right_wrist_roll_joint: 2.0
+    right_wrist_pitch_joint: 1.0
+    right_wrist_yaw_joint: 1.0
+  # Default pose of the training (joint_pos observation is relative to it).
+  q0:
+    left_hip_pitch_joint: -0.312
+    left_hip_roll_joint: 0.0
+    left_hip_yaw_joint: 0.0
+    left_knee_joint: 0.669
+    left_ankle_pitch_joint: -0.363
+    left_ankle_roll_joint: 0.0
+    right_hip_pitch_joint: -0.312
+    right_hip_roll_joint: 0.0
+    right_hip_yaw_joint: 0.0
+    right_knee_joint: 0.669
+    right_ankle_pitch_joint: -0.363
+    right_ankle_roll_joint: 0.0
+    waist_yaw_joint: 0.0
+    waist_roll_joint: 0.0
+    waist_pitch_joint: 0.0
+    left_shoulder_pitch_joint: 0.2
+    left_shoulder_roll_joint: 0.2
+    left_shoulder_yaw_joint: 0.0
+    left_elbow_joint: 0.6
+    left_wrist_roll_joint: 0.0
+    left_wrist_pitch_joint: 0.0
+    left_wrist_yaw_joint: 0.0
+    right_shoulder_pitch_joint: 0.2
+    right_shoulder_roll_joint: -0.2
+    right_shoulder_yaw_joint: 0.0
+    right_elbow_joint: 0.6
+    right_wrist_roll_joint: 0.0
+    right_wrist_pitch_joint: 0.0
+    right_wrist_yaw_joint: 0.0
+
+control:
+  use_QP: true
+  period_s: 0.01
+  posture_weight: 10.0
+  vel_cmd_speed:
+    xy: 0.5
+    yaw: 0.5

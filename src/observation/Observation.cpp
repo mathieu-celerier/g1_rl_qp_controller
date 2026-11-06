@@ -297,6 +297,7 @@ ObservationRegistry makeDefaultObservationRegistry()
   registry.registerType("command", &makeObservation<CommandObservation>);
   registry.registerType("log_force_sensor", &makeObservation<LogForceSensorObservation>);
   registry.registerType("force_sensor", &makeObservation<ForceSensorObservation>);
+  registry.registerType("qacc_ext", &makeObservation<QaccExtObservation>);
 
   return registry;
 }

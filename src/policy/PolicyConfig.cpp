@@ -144,6 +144,18 @@ PolicyConfig PolicyConfig::load(const std::string & policyFolder, std::vector<st
   out.onnxPath = joinPath(policyFolder, onnxFile);
   std::map<std::string, double> kp_map, kd_map, defaultPos_map, actionScale_map;
 
+  const std::string actionType =
+      out.policyConfiguration.has("action") ? out.policyConfiguration("action")("type", std::string("position"))
+                                            : std::string("position");
+  if(actionType == "position")
+    out.actionType = ActionType::Position;
+  else if(actionType == "acceleration")
+    out.actionType = ActionType::Acceleration;
+  else
+    mc_rtc::log::error_and_throw("[PolicyConfig:{}] action.type must be 'position' or 'acceleration', got '{}'",
+                                 out.name, actionType);
+  const bool accelerationAction = out.actionType == ActionType::Acceleration;
+
   if(out.policyConfiguration.has("control"))
   {
     const mc_rtc::Configuration control = out.policyConfiguration("control");
@@ -176,9 +188,12 @@ PolicyConfig PolicyConfig::load(const std::string & policyFolder, std::vector<st
     }
     out.velCmd = vel_cmd;
 
+    out.postureWeight = control("posture_weight", out.postureWeight);
+
     kp_map = control("kp", std::map<std::string, double>());
     kd_map = control("kd", std::map<std::string, double>());
-    if(kp_map.size() < joint_size || kd_map.size() < mcRtcJoints.size())
+    // Acceleration actions do not use the PD law: kp/kd are optional (zero when absent)
+    if(!accelerationAction && (kp_map.size() < joint_size || kd_map.size() < mcRtcJoints.size()))
       mc_rtc::log::error_and_throw("[PolicyConfig] policy.yaml: kp and kd must contain all joints");
   }
   else
@@ -187,6 +202,7 @@ PolicyConfig PolicyConfig::load(const std::string & policyFolder, std::vector<st
   {
     const mc_rtc::Configuration action = out.policyConfiguration("action");
     action("joints", out.actionJointGroup);
+    out.accelerationLimit = action("acceleration_limit", out.accelerationLimit);
     out.controlledJointGroup = out.actionJointGroup;
     if(action.has("controlled_joints")) action("controlled_joints", out.controlledJointGroup);
 
@@ -207,8 +223,8 @@ PolicyConfig PolicyConfig::load(const std::string & policyFolder, std::vector<st
   {
     const std::string & joint = mcRtcJoints[i];
 
-    out.kp[i] = find_value(kp_map, joint, "kp", 0);
-    out.kd[i] = find_value(kd_map, joint, "kd", 0);
+    out.kp[i] = kp_map.empty() && accelerationAction ? 0.0 : find_value(kp_map, joint, "kp", 0);
+    out.kd[i] = kd_map.empty() && accelerationAction ? 0.0 : find_value(kd_map, joint, "kd", 0);
     double scale = find_value(actionScale_map, joint, "action scale", -1);
 
     if(actionScale_map.size() > 0 && scale != -1) out.actionScale.push_back(scale);
@@ -235,6 +251,16 @@ void PolicyConfig::validate() const
 
   if(pdGainsRatio <= 0.0)
     mc_rtc::log::error_and_throw("[PolicyConfig:{}] control.pd_gains_ratio must be positive", name);
+
+  if(actionType == ActionType::Acceleration)
+  {
+    if(!useQP)
+      mc_rtc::log::error_and_throw("[PolicyConfig:{}] acceleration actions require control.use_QP: true", name);
+    if(!std::isfinite(accelerationLimit) || accelerationLimit <= 0.0)
+      mc_rtc::log::error_and_throw("[PolicyConfig:{}] action.acceleration_limit must be finite and positive", name);
+    if(!std::isfinite(postureWeight) || postureWeight <= 0.0)
+      mc_rtc::log::error_and_throw("[PolicyConfig:{}] control.posture_weight must be finite and positive", name);
+  }
 }
 
 //============================================================================//

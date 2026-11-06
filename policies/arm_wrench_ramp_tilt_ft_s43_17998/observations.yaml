@@ -1,0 +1,49 @@
+# mjlab actor terms in training order, five-sample history per term stacked oldest first.
+# The base terms come from the observed robot state (observer pipeline), not from a sensor.
+training_convention: mjlab
+history_order_newest_first: false
+
+observations:
+  - type: base_lin_vel
+    parameters:
+      history: 5
+      # Estimated base velocity (Tilt observer on hardware)
+      body: base
+
+  - type: base_ang_vel
+    parameters:
+      history: 5
+      body: base
+
+  - type: projected_gravity
+    parameters:
+      history: 5
+      body: base
+
+  - type: joint_pos
+    parameters:
+      history: 5
+      joints: all
+      relative_to_default_pose: true
+
+  - type: joint_vel
+    parameters:
+      history: 5
+      joints: all
+
+  - type: last_action
+    parameters:
+      history: 5
+      joints: all
+
+  - type: command
+    parameters:
+      history: 5
+      size: 3
+
+  - type: qacc_ext
+    parameters:
+      history: 5
+      # M^-1 tau_ext from the ExternalForcesObserver: [base lin (world), base ang (base), joints]
+      joints: all
+

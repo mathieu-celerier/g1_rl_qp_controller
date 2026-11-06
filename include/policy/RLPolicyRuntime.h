@@ -9,6 +9,7 @@
 
 #include <mc_rtc/Configuration.h>
 #include <mc_rbdyn/Robot.h>
+#include <mc_tasks/PostureTask.h>
 #include <mc_tasks/TorqueJointTask.h>
 
 #include <memory>
@@ -77,7 +78,21 @@ public:
   double phase() const { return phaseNormalized_; }
 
   bool useQP() const { return useQP_; }
-  void setUseQP(bool useQP) { useQP_ = useQP; }
+  /** The QP cannot be bypassed for acceleration actions: the request is ignored with a warning. */
+  void setUseQP(bool useQP);
+
+  /** True when the active policy outputs joint accelerations (action.type: acceleration). */
+  bool accelerationAction() const { return actionType_ == PolicyConfig::ActionType::Acceleration; }
+  double postureWeight() const { return postureWeight_; }
+  double accelerationLimit() const { return accelerationLimit_; }
+  /** Acceleration target qdd* sent to the PostureTask, controller joint order. */
+  const Eigen::VectorXd & qdd_rl() const { return qdd_rl_; }
+
+  /**
+   * @brief PostureTask that carries qdd* for acceleration actions (zero gains, refAccel).
+   * The controller owns the task and adds/removes it from the solver; the runtime only sets refAccel.
+   */
+  void setPostureTask(const std::shared_ptr<mc_tasks::PostureTask> & postureTask) { postureTask_ = postureTask; }
 
   const Eigen::VectorXd & q_rl() const { return q_rl_; }
   const Eigen::VectorXd & q_zero() const { return q_zero_; }
@@ -150,6 +165,12 @@ private:
 
   /** @brief Controller-order joint indices that are actually allowed to receive the policy action. */
   std::vector<int> controlledActionControllerIndices_;
+
+  PolicyConfig::ActionType actionType_ = PolicyConfig::ActionType::Position;
+  double accelerationLimit_ = 900.0;
+  double postureWeight_ = 10.0;
+  Eigen::VectorXd qdd_rl_;
+  std::shared_ptr<mc_tasks::PostureTask> postureTask_;
 
   Eigen::VectorXd q_rl_;
   Eigen::VectorXd q_zero_;

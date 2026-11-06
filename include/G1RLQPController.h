@@ -10,7 +10,9 @@
 #include <mc_rtc/Configuration.h>
 #include <mc_tasks/TorqueJointTask.h>
 
+#include <array>
 #include <memory>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -98,8 +100,14 @@ struct G1RLQPController_DLLAPI G1RLQPController : public mc_control::fsm::Contro
     maxYawCmd = new_max_yaw_cmd;
   };
 
-  /** @brief Torque-space whole-body task fed into the CBF-QP solver. */
+  /** @brief Torque-space whole-body task fed into the CBF-QP solver (position actions). */
   std::shared_ptr<mc_tasks::TorqueJointTask> torqueJointTask;
+
+  /** @brief FSM PostureTask carrying qdd* through refAccel, zero gains (acceleration actions). */
+  std::shared_ptr<mc_tasks::PostureTask> accelerationTask;
+
+  /** @brief Load a policy by name and put the task matching its action type in the solver. */
+  void loadPolicy(const std::string & policyName);
 
   /** @brief Total number of actuated joints (from robot().refJointOrder()). */
   int nbActuatedJoints = 0;
@@ -138,6 +146,31 @@ private:
   void updateDynamicConstraints();
   void updateSelfCollisionConstraints();
   void updateConstraints();
+  /** @brief Keep exactly one RL task in the solver: torqueJointTask (position) or accelerationTask (acceleration). */
+  void configureTasksForPolicy();
+  bool torqueTaskActive_ = false;
+  bool accelerationTaskActive_ = false;
+
+  /**
+   * @brief Simulation-only test inputs, from the optional "sim_test" configuration entry (same format as the
+   * previous G1RLQPController, so the mc_mujoco test scripts are unchanged):
+   *   command_schedule: [[t, vx, vy, wz], ...]  velocity command from t on (s, from the controller start)
+   *   pushes: {body, force: [min, max] N, duration: [min, max] s, interval: [min, max] s, seed, start, at_com}
+   *     horizontal force of random direction applied through mc_mujoco's <robot>::ApplyForcesOnBody
+   */
+  void loadSimTest();
+  void updateSimTest();
+  bool simTestEnabled_ = false;
+  double simTestTime_ = 0.0;
+  std::vector<std::array<double, 4>> commandSchedule_;
+  bool pushesEnabled_ = false;
+  std::string pushBody_ = "pelvis";
+  // pushes.at_com: apply the force at the body CoM (as mjlab's xfrc_applied) instead of its origin
+  bool pushAtCom_ = true;
+  std::array<double, 2> pushForce_{{0.0, 0.0}}, pushDuration_{{0.1, 0.1}}, pushInterval_{{2.0, 2.0}};
+  std::mt19937 pushRng_;
+  double nextPushTime_ = 0.0, pushEndTime_ = -1.0;
+  Eigen::Vector3d pushForceVec_ = Eigen::Vector3d::Zero();
 
 private:
   bool printLimits_ = true;

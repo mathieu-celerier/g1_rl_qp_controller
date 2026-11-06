@@ -30,6 +30,24 @@ struct PolicyConfig
   std::string observationsYamlPath;
   VelocityCommand velCmd;
 
+  /**
+   * @brief Meaning of the policy action, from policy.yaml/action/type.
+   *
+   * position (default): q* = action * scale + q0, tracked by the PD torque law (TorqueJointTask or QP bypass).
+   * acceleration: qdd* = clamp(action * scale, ±acceleration_limit), tracked by the FSM PostureTask
+   *   (zero gains, refAccel) inside the CBF-QP. The QP cannot be bypassed and kp/kd are not used.
+   */
+  enum class ActionType
+  {
+    Position,
+    Acceleration
+  };
+  ActionType actionType = ActionType::Position;
+  /** Acceleration actions: clamp on |qdd*| (rad/s^2), from action.acceleration_limit. */
+  double accelerationLimit = 900.0;
+  /** Acceleration actions: weight of the PostureTask carrying qdd*, from control.posture_weight. */
+  double postureWeight = 10.0;
+
   bool useQP = true;
   /** Policy inference period in seconds. Configured through control.period_s or control.frequency_hz. */
   double policyStepSize = 0.02;

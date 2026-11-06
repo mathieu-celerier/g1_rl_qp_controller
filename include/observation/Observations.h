@@ -219,6 +219,35 @@ private:
 };
 
 /**
+ * @brief External generalized acceleration qacc_ext = M(q)^-1 * tau_ext.
+ *
+ * tau_ext is robot.externalTorques() (mc_rtc dof order), set by the ExternalForcesObserver with update: true.
+ * The output follows MuJoCo's free-joint layout, as the policies trained in mjlab observe it:
+ *   [base linear (world frame), base angular (base frame), joints in the selected order]
+ * so its size is 6 + number of joints.
+ *
+ * Parameters:
+ *   joints: group or list (default: the policy action joints)
+ *   scale: scalar or vector of size 6 + joints (default 1.0)
+ *   base_force_world: the linear part of tau_ext on the floating base is in the world frame instead of the base
+ *     frame (some simulator ground-truth sources). Default false: the momentum observer gives it in the base frame.
+ */
+class QaccExtObservation : public Observation
+{
+public:
+  QaccExtObservation(const ObservationConfig & config, const ObservationConvention & convention);
+
+  void configure(const ObservationContext & context) override;
+  int size() const override { return 6 + static_cast<int>(dofIndices_.size()); }
+  void compute(const ObservationContext & context, Eigen::Ref<Eigen::VectorXd> out) const override;
+
+private:
+  std::vector<int> dofIndices_;
+  bool baseForceWorld_ = false;
+  Eigen::VectorXd scale_;
+};
+
+/**
  * @brief Observation from a force sensor by name - log compressed data
  *
  * Handles an array of sensor, their data will be concatenated

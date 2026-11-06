@@ -36,6 +36,7 @@ void RLPolicyRuntime::configure(const mc_rtc::Configuration & controllerConfig,
   const int nbActuatedJoints = static_cast<int>(controllerJointOrder_.size());
 
   q_rl_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+  qdd_rl_ = Eigen::VectorXd::Zero(nbActuatedJoints);
   q_zero_ = Eigen::VectorXd::Zero(nbActuatedJoints);
   currentActionScaled_ = Eigen::VectorXd::Zero(nbActuatedJoints);
   actionScale_ = Eigen::VectorXd::Zero(nbActuatedJoints);
@@ -58,6 +59,18 @@ void RLPolicyRuntime::reset(G1RLQPController & ctl)
   resetObservationHistory(ctl);
   policyTimer_ = policyStepSize_;
   policyUpdateCount_ = 0;
+  qdd_rl_.setZero();
+  if(accelerationAction() && postureTask_) { postureTask_->refAccel(qdd_rl_); }
+}
+
+void RLPolicyRuntime::setUseQP(bool useQP)
+{
+  if(!useQP && accelerationAction())
+  {
+    mc_rtc::log::warning("[RLPolicyRuntime] The QP cannot be bypassed for acceleration actions");
+    return;
+  }
+  useQP_ = useQP;
 }
 
 void RLPolicyRuntime::runPolicyStepIfNeeded(G1RLQPController & ctl, double dt)
@@ -92,6 +105,7 @@ void RLPolicyRuntime::runPolicyStepIfNeeded(G1RLQPController & ctl, double dt)
 
   currentActionScaled_.setZero();
   q_rl_ = q_zero_;
+  qdd_rl_.setZero();
 
   for(int actionIndex = 0; actionIndex < currentAction_.size(); ++actionIndex)
   {
@@ -102,8 +116,20 @@ void RLPolicyRuntime::runPolicyStepIfNeeded(G1RLQPController & ctl, double dt)
                  controlledActionControllerIndices_.end(),
                  dofIndex) != controlledActionControllerIndices_.end())
     {
-      q_rl_(dofIndex) = currentActionScaled_(dofIndex) + q_zero_(dofIndex);
+      if(accelerationAction())
+        qdd_rl_(dofIndex) =
+            std::max(-accelerationLimit_, std::min(currentActionScaled_(dofIndex), accelerationLimit_));
+      else
+        q_rl_(dofIndex) = currentActionScaled_(dofIndex) + q_zero_(dofIndex);
     }
+  }
+
+  if(accelerationAction())
+  {
+    if(!postureTask_)
+      mc_rtc::log::error_and_throw("[RLPolicyRuntime] Acceleration action without a PostureTask");
+    // PostureTask (TVM backend) takes the actuated joints in refJointOrder, the controller order.
+    postureTask_->refAccel(qdd_rl_);
   }
 
   policyTimer_ = std::fmod(policyTimer_, policyStepSize_);
@@ -195,6 +221,10 @@ void RLPolicyRuntime::configureControl(const PolicyConfig & policy,
                                        const std::shared_ptr<mc_tasks::TorqueJointTask> & torqueTask)
 {
   useQP_ = policy.useQP;
+  actionType_ = policy.actionType;
+  accelerationLimit_ = policy.accelerationLimit;
+  postureWeight_ = policy.postureWeight;
+  qdd_rl_.setZero();
   policyStepSize_ = policy.policyStepSize;
   pdGainsRatio_ = policy.pdGainsRatio;
 

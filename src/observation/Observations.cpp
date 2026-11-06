@@ -1,6 +1,7 @@
 #include "observation/Observations.h"
 
 
+#include <RBDyn/FD.h>
 #include <RBDyn/MultiBodyConfig.h>
 #include <SpaceVecAlg/SpaceVecAlg>
 #include <mc_rbdyn/rpy_utils.h>
@@ -500,6 +501,68 @@ void PhaseObservation::compute(const ObservationContext & context, Eigen::Ref<Ei
   
   out(1-cos_first_) = scale_(0) * std::cos(angle);
   out(cos_first_) = scale_(1) * std::sin(angle);
+}
+
+//============================================================================//
+// QaccExtObservation
+//============================================================================//
+
+QaccExtObservation::QaccExtObservation(const ObservationConfig & config, const ObservationConvention & convention)
+: Observation(config, convention)
+{
+}
+
+void QaccExtObservation::configure(const ObservationContext & context)
+{
+  mc_rtc::Configuration parameters =
+      context.convention.resolveObservationParameters(requestedType(), type(), config_.parameters);
+
+  const auto & robot = context.observationRobot;
+  if(robot.mb().nrJoints() == 0 || robot.mb().joint(0).dof() != 6)
+    mc_rtc::log::error_and_throw("[Observation:{}] Robot '{}' must have a free floating base", name(), robot.name());
+
+  const std::vector<int> controllerIndices = context.convention.resolveJointControllerIndices(
+      parameters, context.controllerJointOrder, context.policyJointControllerIndices);
+  dofIndices_.clear();
+  for(const int ctrlIdx : controllerIndices)
+  {
+    const std::string & jointName = context.controllerJointOrder[static_cast<size_t>(ctrlIdx)];
+    const auto jointIndex = static_cast<int>(robot.jointIndexByName(jointName));
+    if(robot.mb().joint(jointIndex).dof() != 1)
+      mc_rtc::log::error_and_throw("[Observation:{}] Joint '{}' must have one DoF", name(), jointName);
+    dofIndices_.push_back(robot.mb().jointPosInDof(jointIndex));
+  }
+
+  baseForceWorld_ = readParameter<bool>(parameters, "base_force_world", false);
+  scale_ = readScale(parameters, "scale", size(), 1.0);
+}
+
+void QaccExtObservation::compute(const ObservationContext & context, Eigen::Ref<Eigen::VectorXd> out) const
+{
+  const auto & robot = context.observationRobot;
+  const auto & mb = robot.mb();
+
+  Eigen::VectorXd tauExt = robot.externalTorques();
+  if(tauExt.size() != mb.nrDof())
+  {
+    out.setZero();
+    return;
+  }
+  // sva rotations are world-to-base
+  const Eigen::Matrix3d & E_0_b = robot.mbc().bodyPosW[0].rotation();
+  if(baseForceWorld_) tauExt.segment<3>(3) = E_0_b * tauExt.segment<3>(3);
+
+  // Same mass matrix as the ExternalForcesObserver (includes the rotor inertia, like MuJoCo's armature)
+  rbd::ForwardDynamics fd(mb);
+  fd.computeH(mb, robot.mbc());
+  const Eigen::VectorXd qacc = fd.H().ldlt().solve(tauExt);
+
+  // RBDyn free joint: [angular; linear] in the base frame. MuJoCo: [linear in world frame; angular in base frame]
+  out.segment<3>(0) = E_0_b.transpose() * qacc.segment<3>(3);
+  out.segment<3>(3) = qacc.segment<3>(0);
+  for(size_t i = 0; i < dofIndices_.size(); ++i) out(6 + static_cast<Eigen::Index>(i)) = qacc(dofIndices_[i]);
+
+  out = out.cwiseProduct(scale_);
 }
 
 //============================================================================//

@@ -72,6 +72,47 @@ You here have access to 2 example directories. `minimalExample` with a basic, mi
 
 Set `default_policy` in `etc/G1RLQPController.in.yaml`.
 
+## Acceleration policies
+
+Besides position-PD policies, the controller runs policies whose action is a joint acceleration (mjlab
+`JointAccelerationActionCfg`), as trained in `mjlab_acceleration_policies`. In `policy.yaml`:
+
+```yaml
+action:
+  type: acceleration        # default: position
+  joints: all
+  acceleration_limit: 900.0 # |qdd*| clamp, rad/s^2
+  scale: {...}              # qdd* = scale * action
+  q0: {...}                 # training default pose (joint_pos observation)
+control:
+  use_QP: true              # required: qdd* is only tracked inside the QP
+  posture_weight: 10.0
+```
+
+`qdd*` is sent to the FSM `PostureTask` (zero gains, `refAccel`), which replaces the `TorqueJointTask` in the
+CBF-QP while such a policy is active; `kp`/`kd` are not used. The QP output torques are sent to the robot as for
+position policies (`ControlMode: Torque`).
+
+These policies also observe `qacc_ext = M^-1 tau_ext` (observation type `qacc_ext`), computed from the
+`ExternalForcesObserver` estimate in MuJoCo's free-joint layout `[base linear (world), base angular (base),
+joints]`, and the estimated base linear velocity (`base_lin_vel` with `body: base`). On hardware the base state
+must come from the Tilt observer: `etc/G1RLQPController.in.yaml` is set up for that.
+
+| policy folder | training | observes `qacc_ext` |
+|---|---|---|
+| `arm_wrench_joint_dr_17998` | ArmWrenchRamp + joint-friction randomization (default, deployment candidate) | yes |
+| `arm_wrench_ramp_14999` | ArmWrenchRamp, seed 42 | yes |
+| `arm_wrench_ramp_tilt_ft_17998` | ArmWrenchRamp fine-tuned with the Tilt observer in the loop | yes |
+| `arm_wrench_ramp_s43_14999` | ArmWrenchRamp, seed 43 | yes |
+| `arm_wrench_ramp_tilt_ft_s43_17998` | Tilt fine-tune of seed 43 | yes |
+| `arm_wrench_ramp_no_qacc_14999` | ablation without `qacc_ext` | no |
+| `raphael_08_13_21550` | Raphaël Barrabes's 2026-08-13 policy | no |
+
+The joint-limit CBF gains used to validate them are in the `joint_limit_cbf` entry of the configuration.
+
+For simulation tests, an optional `sim_test` entry gives a velocity command schedule and random pushes through
+mc_mujoco (see `loadSimTest()` in `G1RLQPController.h`).
+
 ## Build
 
 ```bash
@@ -97,6 +138,10 @@ Every controller timestep (physics_step_size):
 │
 ├── useQP=true:  τ → TorqueJointTask → CBF-QP → robot
 └── useQP=false: τ → robot (direct)
+
+Acceleration policies (action.type: acceleration):
+├── qdd* = clamp(action * actionScale, ±acceleration_limit), held between policy steps
+└── qdd* → PostureTask refAccel → CBF-QP → τ → robot
 ```
 
 [mc_rtc]: https://jrl-umi3218.github.io/mc_rtc/

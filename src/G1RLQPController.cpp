@@ -9,6 +9,7 @@
 #include <mc_joystick_plugin/joystick_inputs.h>
 #include <termios.h>
 
+#include <algorithm>
 #include <cmath>
 
 G1RLQPController::G1RLQPController(mc_rbdyn::RobotModulePtr rm,
@@ -18,19 +19,38 @@ G1RLQPController::G1RLQPController(mc_rbdyn::RobotModulePtr rm,
 {
   config_ = config;
 
+  // Optional override of the joint-limit CBF and velocity-limit parameters (defaults in the header)
+  if(config_.has("joint_limit_cbf"))
+  {
+    const auto cbf = config_("joint_limit_cbf");
+    cbf("zeta", zeta_jointLimit_);
+    cbf("lambda", lambda_jointLimit_);
+    cbf("ds_percent", dsPercent_);
+    cbf("vel_percent", velPercent_);
+    diPercent_ = std::max(diPercent_, std::min(dsPercent_ * 2.0, 0.999)); // di > ds
+    mc_rtc::log::info("[G1RLQPController] joint-limit CBF: zeta={}, lambda={}, ds={}, velocity fraction={}",
+                      zeta_jointLimit_, lambda_jointLimit_, dsPercent_, velPercent_);
+  }
+
   //Initialize Constraints
   // These defaults provide joint-limit and self-collision protection
   updateConstraints();
-  
-  // Remove the default posture task created by the FSM
-  solver().removeTask(getPostureTask(robot().name()));
+
+  // The default posture task created by the FSM carries qdd* for acceleration policies (see
+  // configureTasksForPolicy), it is out of the solver otherwise
+  accelerationTask = getPostureTask(robot().name());
+  if(!accelerationTask)
+    mc_rtc::log::error_and_throw("[G1RLQPController] No FSM PostureTask for robot {}", robot().name());
+  solver().removeTask(accelerationTask);
   // Initialize Task
   torqueJointTask = std::make_shared<mc_tasks::TorqueJointTask>(
       solver(), robot().robotIndex(), 100.0, 1); // TODO(robot): tune stiffness/weight
-  solver().addTask(torqueJointTask);
   initializeRobotBasics();
 
+  rlRuntime_.setPostureTask(accelerationTask);
   rlRuntime_.configure(config_, *this, torqueJointTask);
+  configureTasksForPolicy();
+  loadSimTest();
 
   addGui();
   addLog();
@@ -48,6 +68,7 @@ bool G1RLQPController::run()
     RLuseKeyboardInputs();
 
   if(printLimits_) computeLimits();
+  updateSimTest();
   bool run = mc_control::fsm::Controller::run(
           mc_solver::FeedbackType::ClosedLoopIntegrateReal);
   if(byPassQPControl()) // Run RL without taking the QP into account
@@ -174,6 +195,122 @@ void G1RLQPController::activateQPControl(bool activate)
   rlRuntime_.setUseQP(activate);
 }
 
+void G1RLQPController::loadPolicy(const std::string & policyName)
+{
+  rlRuntime_.loadPolicyByName(policyName, *this, torqueJointTask);
+  configureTasksForPolicy();
+}
+
+void G1RLQPController::configureTasksForPolicy()
+{
+  if(rlRuntime_.accelerationAction())
+  {
+    if(torqueTaskActive_)
+    {
+      solver().removeTask(torqueJointTask);
+      torqueTaskActive_ = false;
+    }
+    // No position or velocity feedback: the task only tracks refAccel = qdd*. The weight must be non-zero.
+    accelerationTask->setGains(0.0, 0.0);
+    accelerationTask->weight(rlRuntime_.postureWeight());
+    // TVM's PostureFunction acts on the actuated joints only (refJointOrder), not on the floating base
+    accelerationTask->reset();
+    accelerationTask->refVel(Eigen::VectorXd::Zero(nbActuatedJoints));
+    accelerationTask->refAccel(rlRuntime_.qdd_rl());
+    if(!accelerationTaskActive_)
+    {
+      solver().addTask(accelerationTask);
+      accelerationTaskActive_ = true;
+    }
+    mc_rtc::log::info("[G1RLQPController] Acceleration policy: PostureTask weight {}, |qdd*| <= {}",
+                      accelerationTask->weight(), rlRuntime_.accelerationLimit());
+  }
+  else
+  {
+    if(accelerationTaskActive_)
+    {
+      solver().removeTask(accelerationTask);
+      accelerationTaskActive_ = false;
+    }
+    if(!torqueTaskActive_)
+    {
+      solver().addTask(torqueJointTask);
+      torqueTaskActive_ = true;
+    }
+  }
+}
+
+void G1RLQPController::loadSimTest()
+{
+  if(!config_.has("sim_test")) return;
+  const auto st = config_("sim_test");
+  simTestEnabled_ = true;
+  if(st.has("command_schedule"))
+  {
+    for(const std::vector<double> & row : st("command_schedule"))
+    {
+      if(row.size() != 4)
+        mc_rtc::log::error_and_throw("[G1RLQPController] sim_test.command_schedule rows are [t, vx, vy, wz]");
+      commandSchedule_.push_back({{row[0], row[1], row[2], row[3]}});
+    }
+  }
+  if(st.has("pushes"))
+  {
+    const auto p = st("pushes");
+    pushesEnabled_ = true;
+    p("body", pushBody_);
+    p("at_com", pushAtCom_);
+    p("force", pushForce_);
+    p("duration", pushDuration_);
+    p("interval", pushInterval_);
+    pushRng_.seed(static_cast<unsigned>(p("seed", 0)));
+    nextPushTime_ = p("start", 2.0);
+  }
+  mc_rtc::log::warning("[G1RLQPController] sim_test: {} command entries, pushes {} (body {}, {}-{} N)",
+                       commandSchedule_.size(), pushesEnabled_, pushBody_, pushForce_[0], pushForce_[1]);
+}
+
+void G1RLQPController::updateSimTest()
+{
+  if(!simTestEnabled_) return;
+  const double t = simTestTime_;
+  simTestTime_ += timeStep;
+
+  for(const auto & row : commandSchedule_)
+  {
+    if(row[0] <= t) rlRuntime_.setCommand({row[1], row[2], row[3]});
+  }
+
+  if(!pushesEnabled_) return;
+  auto uniform = [this](const std::array<double, 2> & r)
+  { return std::uniform_real_distribution<double>(r[0], r[1])(pushRng_); };
+  if(t >= nextPushTime_)
+  {
+    const double angle = std::uniform_real_distribution<double>(-M_PI, M_PI)(pushRng_);
+    const double force = uniform(pushForce_);
+    pushForceVec_ << force * std::cos(angle), force * std::sin(angle), 0.0;
+    pushEndTime_ = t + uniform(pushDuration_);
+    nextPushTime_ = pushEndTime_ + uniform(pushInterval_);
+  }
+  if(t < pushEndTime_)
+  {
+    const auto call = robot().name() + "::ApplyForcesOnBody";
+    Eigen::Vector3d pushPoint = Eigen::Vector3d::Zero(); // in the body frame
+    if(pushAtCom_)
+    {
+      const auto & I = robot().mb().body(robot().bodyIndexByName(pushBody_)).inertia();
+      pushPoint = I.momentum() / I.mass();
+    }
+    if(datastore().has(call))
+    {
+      datastore().call<bool, const std::string &, const sva::ForceVecd &, const Eigen::Vector3d>(
+          call, pushBody_, sva::ForceVecd(Eigen::Vector3d::Zero(), pushForceVec_), pushPoint);
+    }
+  }
+  else
+    pushForceVec_.setZero();
+}
+
 rlqp::RLPolicyRuntime & G1RLQPController::rlRuntime() { return rlRuntime_; }
 
 const rlqp::RLPolicyRuntime & G1RLQPController::rlRuntime() const { return rlRuntime_; }
@@ -241,6 +378,22 @@ void G1RLQPController::addLog()
   logger().addLogEntry("G1RLQPController_RL_currentActionScaled", [this]() { return rlRuntime_.currentActionScaled(); });
   logger().addLogEntry("G1RLQPController_RL_actionScale", [this]() { return rlRuntime_.actionScale(); });
   logger().addLogEntry("G1RLQPController_RL_command", [this]() { return rlRuntime_.command(); });
+  logger().addLogEntry("G1RLQPController_RL_qdd", [this]() { return rlRuntime_.qdd_rl(); });
+  // Entry names of the previous G1RLQPController, read by the mc_mujoco test scripts
+  logger().addLogEntry("G1RLQPController_velCmd", [this]() { return rlRuntime_.command(); });
+  logger().addLogEntry("G1RLQPController_pushForce", [this]() { return pushForceVec_; });
+  logger().addLogEntry("G1RLQPController_qddRefFull",
+                       [this]()
+                       {
+                         // qdd* in mc_rtc dof order (floating base first), to compare with the QP output
+                         Eigen::VectorXd out = Eigen::VectorXd::Zero(robot().mb().nrDof());
+                         for(int i = 0; i < nbActuatedJoints; ++i)
+                         {
+                           const auto j = robot().jointIndexByName(jointNames[static_cast<size_t>(i)]);
+                           out(robot().mb().jointPosInDof(static_cast<int>(j))) = rlRuntime_.qdd_rl()(i);
+                         }
+                         return out;
+                       });
 
   // Controller state variables
   logger().addLogEntry("G1RLQPController_useQP", [this]() { return rlRuntime_.useQP(); });
@@ -271,11 +424,12 @@ void G1RLQPController::addGui()
       "Select policy",
       rlRuntime_.availablePolicyNames(),
       [this]() { return rlRuntime_.currentPolicyName(); },
-      [this](const std::string & policyName) {
-        rlRuntime_.loadPolicyByName(policyName, *this, torqueJointTask);
-      }),
+      [this](const std::string & policyName) { loadPolicy(policyName); }),
+    mc_rtc::gui::Label("Action type",
+                       [this]() { return rlRuntime_.accelerationAction() ? "acceleration" : "position"; }),
     mc_rtc::gui::Button("Reload current policy", [this]() {
       rlRuntime_.reloadCurrentPolicy(*this, torqueJointTask);
+      configureTasksForPolicy();
     }));
 
   gui()->addElement(
@@ -507,29 +661,35 @@ void G1RLQPController::computeLimits()
 
 std::pair<sva::PTransformd, Eigen::Vector3d> G1RLQPController::createContactAnchor(const mc_rbdyn::Robot & anchorRobot)
 {
-  sva::PTransformd X_foot_r = anchorRobot.bodyPosW("right_ankle_roll_link");
-  sva::PTransformd X_foot_l = anchorRobot.bodyPosW("left_ankle_roll_link");
-
-  sva::MotionVecd v_foot_r = anchorRobot.bodyVelW("right_ankle_roll_link");
-  sva::MotionVecd v_foot_l = anchorRobot.bodyVelW("left_ankle_roll_link");
-
-  int right_knee_index = int(robot().jointIndexByName("right_knee_joint")) + 5;
-  int left_knee_index = int(robot().jointIndexByName("left_knee_joint")) + 5;
-  double tau_ext_knee_r =  abs(robot().externalTorques()[right_knee_index]);
-  double tau_ext_knee_l =  abs(robot().externalTorques()[left_knee_index]);
-  double leftFootRatio = tau_ext_knee_l/(tau_ext_knee_r+tau_ext_knee_l);
-  if(tau_ext_knee_r + tau_ext_knee_l < 0.02)
+  // Anchor between the two sole centers, weighted by the knee external torque of the estimated (real) robot, as
+  // validated with the acceleration policies in mc_mujoco (Tilt base velocity error 0.011-0.014 m/s)
+  const auto & real = realRobot(robotName_);
+  const Eigen::VectorXd & tauExt = real.externalTorques();
+  auto kneeTorque = [&](const char * joint)
   {
-    leftFootRatio = 0.5;
-  }
-         
-  Eigen::VectorXd w_r = X_foot_r.translation();
-  Eigen::VectorXd w_l = X_foot_l.translation();
-  Eigen::VectorXd contact_anchor = (w_r * (1 - leftFootRatio) + w_l * leftFootRatio)  ;
-  Eigen::VectorXd anchor_vel = (v_foot_r.linear() * (1 - leftFootRatio) + v_foot_l.linear() * leftFootRatio);
-  contactAnchorTf_ = sva::PTransformd(Eigen::Matrix3d::Identity(), contact_anchor); 
+    if(tauExt.size() != real.mb().nrDof()) return 1.0;
+    return std::abs(tauExt(real.mb().jointPosInDof(static_cast<int>(real.jointIndexByName(joint)))));
+  };
+  double wl = kneeTorque("left_knee_joint");
+  double wr = kneeTorque("right_knee_joint");
+  if(wl + wr < 1e-6) wl = wr = 1.0;
+  const double leftFootRatio = wl / (wl + wr);
 
-  return {contactAnchorTf_, anchor_vel};
+  // Position and world velocity of a sole center (velocity of that point, not of the ankle body origin)
+  auto solePoint = [&](const char * surface, Eigen::Vector3d & p, Eigen::Vector3d & v)
+  {
+    const auto & body = anchorRobot.surface(surface).bodyName();
+    const auto & velW = anchorRobot.bodyVelW(body);
+    p = anchorRobot.surfacePose(surface).translation();
+    v = velW.linear() + velW.angular().cross(p - anchorRobot.bodyPosW(body).translation());
+  };
+  Eigen::Vector3d p_l, v_l, p_r, v_r;
+  solePoint("LeftFootCenter", p_l, v_l);
+  solePoint("RightFootCenter", p_r, v_r);
+
+  contactAnchorTf_ =
+      sva::PTransformd(Eigen::Matrix3d::Identity(), leftFootRatio * p_l + (1 - leftFootRatio) * p_r);
+  return {contactAnchorTf_, leftFootRatio * v_l + (1 - leftFootRatio) * v_r};
 }
 
 void G1RLQPController::updateDynamicConstraints()

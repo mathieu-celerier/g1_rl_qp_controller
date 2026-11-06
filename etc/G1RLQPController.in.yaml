@@ -30,6 +30,17 @@ collisions:
 #     contactType: acceleration
 #   - type: compoundJoint
 
+# Joint-limit CBF and velocity limit of the acceleration policies' mc_mujoco validation (previous
+# G1RLQPController, 2026-10). Remove this block to use the defaults of G1RLQPController.h.
+joint_limit_cbf:
+  zeta: 1.2
+  lambda: 100.0
+  ds_percent: 0.01
+  vel_percent: 0.99
+
+# State estimation for hardware: the base orientation and velocity come from the Tilt observer on the pelvis IMU,
+# never from the FloatingBase sensor (simulator ground truth). The acceleration policies observe base_lin_vel and
+# qacc_ext, so both the Tilt and the ExternalForcesObserver must update the real robot.
 ObserverPipelines:
   name: MainPipeline
   gui: true
@@ -42,6 +53,7 @@ ObserverPipelines:
           position: true
           velocity: true
           torque: true
+    # Simulation with ground truth instead of the Tilt observer:
     # - type: BodySensor
     #   update: true
     #   bodySensor: FloatingBase
@@ -49,6 +61,7 @@ ObserverPipelines:
       required: true
       update: true
       config:
+        imuSensor: Accelerometer
         anchorFrameFunction: anchorFrameFunction
         filterGains:
           initAlpha: 2
@@ -56,10 +69,16 @@ ObserverPipelines:
           initGamma: 1
           finalAlpha: 2
           finalBeta: 2
+          finalGamma: 1
+    # Gives tau_ext, read by the qacc_ext observation, the Tilt anchor and the dynamics constraint.
+    # Settings used to validate the acceleration policies in mc_mujoco.
     - type: ExternalForcesObserver
+      update: true
+      is_active: true
       estimation_method: MomentumObserver
       use_forces_from_ft_sensors: false
-      residual_gain: 100 # 30
+      simulator_filter_cutoff_hz: 5.0
+      residual_gain: 31.4159
       torque_source_type: CommandedTorque # MotorTorqueMeasurement
 
 states: {}
@@ -68,4 +87,6 @@ transitions:
 init: G1RLQPController_Initial
 
 policies_root: "@CMAKE_CURRENT_SOURCE_DIR@/policies"
-default_policy: unitree
+# Acceleration policies of mjlab_acceleration_policies (policies/<name>/), see README "Acceleration policies".
+# arm_wrench_joint_dr_17998 is the deployment candidate; unitree is the original position-PD example.
+default_policy: arm_wrench_joint_dr_17998
