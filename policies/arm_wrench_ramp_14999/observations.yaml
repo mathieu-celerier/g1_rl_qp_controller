@@ -18,7 +18,7 @@ observations:
   - type: projected_gravity
     parameters:
       history: 5
-      body: base
+      # Base body (robot.base_body) of the observed robot state
 
   - type: joint_pos
     parameters:

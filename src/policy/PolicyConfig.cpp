@@ -188,7 +188,7 @@ PolicyConfig PolicyConfig::load(const std::string & policyFolder, std::vector<st
     }
     out.velCmd = vel_cmd;
 
-    out.postureWeight = control("posture_weight", out.postureWeight);
+    control("posture_weight", out.postureWeight);
 
     kp_map = control("kp", std::map<std::string, double>());
     kd_map = control("kd", std::map<std::string, double>());
@@ -202,7 +202,7 @@ PolicyConfig PolicyConfig::load(const std::string & policyFolder, std::vector<st
   {
     const mc_rtc::Configuration action = out.policyConfiguration("action");
     action("joints", out.actionJointGroup);
-    out.accelerationLimit = action("acceleration_limit", out.accelerationLimit);
+    action("acceleration_limit", out.accelerationLimit);
     out.controlledJointGroup = out.actionJointGroup;
     if(action.has("controlled_joints")) action("controlled_joints", out.controlledJointGroup);
 
