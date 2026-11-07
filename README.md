@@ -110,6 +110,11 @@ must come from the Tilt observer: `etc/G1RLQPController.in.yaml` is set up for t
 
 The joint-limit CBF gains used to validate them are in the `joint_limit_cbf` entry of the configuration.
 
+Checked against the previous G1RLQPController in mc_mujoco (2026-11-07, `arm_wrench_joint_dr_17998`, mjlab-matched
+G1 model): straight walking 0.46-0.47 m/s at a 0.5 m/s command; no fall on turns, command schedule or 150 N pushes,
+with ground truth and with the Tilt observer on a noisy IMU; 300 N pushes at the CoM 0.30 falls/min with ground
+truth and 0.83 with Tilt + noise (3 falls each; previous controller 0.31 and 0.65 with 6 falls).
+
 For simulation tests, an optional `sim_test` entry gives a velocity command schedule and random pushes through
 mc_mujoco (see `loadSimTest()` in `G1RLQPController.h`).
 
